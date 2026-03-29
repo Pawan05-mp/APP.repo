@@ -17,15 +17,15 @@ exports.scorePlace = (place, targetState, userHistory = []) => {
   const timeEst = (distance / 1000) / (20 / 60);
   
   // 3. Base Score combining spatial + structural match
-  let baseScore = (10 - timeEst) + (behavioral_match * 3) + (place.popularity_score / 2);
+  // ⚡ MOOD RELEVANCE ENHANCEMENT: behavioral_match weight increased to 10 from 3
+  let baseScore = (10 - timeEst) + (behavioral_match * 10) + (place.popularity_score / 4);
 
   // 4. PREVENT EXTREME DISTANCE DOMINATION (Penalty added per audit rules)
   // Distance / 10000 ensures roughly ~ -0.2 penalty for 10km. 
   baseScore -= (distance / 10000) * 0.2;
 
   // 5. EXPLORATION BOOST (Weighted, not completely random)
-  // Popularity maps from 0 to 5 normally. Encourages showing lesser-known gems occasionally.
-  const explorationBoost = (1 - (place.popularity_score / 10)) * 0.15; // Adjusted to account for a generous /10 safety division 
+  const explorationBoost = (1 - (place.popularity_score / 10)) * 0.15; 
   baseScore += explorationBoost;
   
   // 6. INTELLIGENT PERSONALIZATION (Interaction routing match)

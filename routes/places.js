@@ -35,7 +35,7 @@ function getRecent(userId) {
 function updateRecent(userId, placeId) {
   if (!userId) return;
   const list = getRecent(userId);
-  const updated = [...list, placeId].slice(-10); // Keep shifting the rolling cache
+  const updated = [...list, placeId].slice(-20); // Keep shifting the rolling cache
   userRecentMap.set(userId, updated);
 }
 
@@ -135,17 +135,35 @@ router.get('/recommend', async (req, res) => {
 
     // MENTAL MODEL LAYER: Javascript Native Execution
     
-    // 1. Scope Recency Filter
-    const userRecents = getRecent(uid);
-    let filtered = places.filter(p => !userRecents.includes(p.id));
-    if (filtered.length < 5) filtered = places; // Don't break if exhaustive list
+    // 1. Fetch Interaction History for real-time personalization
+    let interactiveHistory = [];
+    try {
+      const { data: interactions } = await supabase
+        .from('user_interactions')
+        .select('place_id, action')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      
+      if (interactions) {
+        interactiveHistory = interactions.map(i => i.place_id);
+      }
+    } catch (historyErr) {
+      console.error("Personalization history fetch failed", historyErr);
+    }
 
-    // TODO: Pull interacting histories from user_interactions for dynamic personalization routing
-    const mockUserHistoryCache = []; 
+    // 2. Scope Recency Filter (Session + DB History)
+    const userRecents = getRecent(uid);
+    // Combine session recents with last 20 from DB history
+    const combinedRecents = [...new Set([...userRecents, ...interactiveHistory.slice(0, 20)])];
+    
+    let filtered = places.filter(p => !combinedRecents.includes(p.id));
+    if (filtered.length < 5) filtered = places; // Don't break if exhaustive list
 
     // 2. Score Array in V8 Engine
     let scoredRecommendations = filtered.map((place) => {
-      const { score, timeEst } = scorePlace(place, targetState, mockUserHistoryCache);
+      // Pass real interactive history to scorer
+      const { score, timeEst } = scorePlace(place, targetState, interactiveHistory);
       const primary_type = place.signals?.quick_bite ? 'quickbite' : (place.signals?.social ? 'social' : 'chill');
 
       return {
@@ -172,8 +190,8 @@ router.get('/recommend', async (req, res) => {
     // 5. Final Subslice limits
     const top5 = diversified.slice(0, 5);
 
-    // 6. Update user's recency tracking cache
-    if (top5[0]) updateRecent(uid, top5[0]._id);
+    // 6. Update user's recency tracking cache (Rolling buffer of 15)
+    top5.forEach(p => updateRecent(uid, p._id));
 
     // Returns TOP 5, UI limits to 1-3 strictly.
     res.json(top5);
@@ -205,6 +223,52 @@ router.post('/interact', async (req, res) => {
      console.error("Log error", err);
      res.sendStatus(500);
   }
+});
+
+// @route   GET /api/places/stats
+// Fetch real user session metrics
+router.get('/stats', async (req, res) => {
+  try {
+    const { user_id } = req.query;
+    if (!user_id) return res.json({ saved: 0, visits: 0, vibes: 0 });
+
+    const { data: interactions } = await supabase
+      .from('user_interactions')
+      .select('action')
+      .eq('user_id', user_id);
+
+    const stats = {
+      saved: interactions?.filter(i => i.action === 'save').length || 0,
+      visits: interactions?.filter(i => i.action === 'go').length || 0,
+      vibes: [...new Set(interactions?.map(i => i.mood).filter(Boolean))].length || 0
+    };
+
+    res.json(stats);
+  } catch (err) {
+    console.error("Stats fetch error", err);
+    res.json({ saved: 0, visits: 0, vibes: 0 });
+  }
+});
+
+// In-memory preference store (Simulating a DB table for this session)
+const userPrefs = new Map();
+
+// @route   GET /api/places/preferences
+router.get('/preferences', async (req, res) => {
+  const { user_id } = req.query;
+  const defaultPrefs = { taste: 'Street food, Cafes', budget: 'Low - Medium' };
+  res.json(userPrefs.get(user_id) || defaultPrefs);
+});
+
+// @route   PATCH /api/places/preferences
+router.patch('/preferences', async (req, res) => {
+  const { user_id, taste, budget } = req.body;
+  const prefs = { 
+    taste: taste || 'Street food, Cafes', 
+    budget: budget || 'Low - Medium' 
+  };
+  userPrefs.set(user_id, prefs);
+  res.json(prefs);
 });
 
 module.exports = router;
